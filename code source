@@ -1,0 +1,419 @@
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox
+import heapq
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+def alea(IX, IY, IZ):
+    IX = 171 * (IX % 177) - 2 * (IX // 177)
+    IY = 172 * (IY % 176) - 35 * (IY // 176)
+    IZ = 170 * (IZ % 178) - 63 * (IZ // 178)
+    if IX < 0:
+        IX += 30269
+    if IY < 0:
+        IY += 30307
+    if IZ < 0:
+        IZ += 30323
+    inter = (IX / 30269) + (IY / 30307) + (IZ / 30323)
+    return [inter - int(inter), IX, IY, IZ]
+
+def draw_from_distribution(IX, IY, IZ, values, probabilities):
+    x, IX, IY, IZ = alea(IX, IY, IZ)
+    cum_probs = np.cumsum(probabilities)
+    idx = np.searchsorted(cum_probs, x)
+    return values[idx], IX, IY, IZ
+
+def is_peak_period(time):
+    return (180 <= time < 360) or (540 <= time < 720)
+
+def schedule_event(events, event_time, event_type, customer_id):
+    heapq.heappush(events, (event_time, event_type, customer_id))
+
+def Single_simulation(IX, IY, IZ, Caisses, open_time=0, close_time=720, prob_no_payment=0.15):
+    current_time = open_time
+    last_queue_length_update_time = open_time
+    events = []
+    queue = []
+
+    counter_busy = [False] * Caisses
+    counter_utilization_time = [0] * Caisses
+    total_customers, lost_customers = 0, 0
+    normal_period_customers, peak_period_customers = 0, 0
+    same_time_arrivals, not_payed_customers = 0, 0
+    total_waiting_time, total_queue_length = 0, 0
+    time_with_max_one_customer = 0
+    customer_arrival_times = {}
+    customer_service_times = {}
+
+    ARRIVAL, SHOPPING_DONE = "arrival", "shopping_done"
+    PAYMENT_DONE = [f"payment_done_c{i+1}" for i in range(Caisses)]
+
+    normal_arrival_intervals = [1, 2, 3, 4, 5, 6]
+    normal_arrival_probabilities = [0.30, 0.50, 0.10, 0.05, 0.03, 0.02]
+    peak_arrival_intervals = [0, 1, 2, 3]
+    peak_arrival_probabilities = [0.15, 0.30, 0.40, 0.15]
+    shopping_times = [2, 4, 6, 8, 10]
+    shopping_probabilities = [0.10, 0.20, 0.40, 0.20, 0.10]
+    payment_times = [1, 2, 3, 4]
+    payment_probabilities = [0.20, 0.40, 0.25, 0.15]
+
+    schedule_event(events, current_time, ARRIVAL, total_customers)
+
+    while current_time < close_time or events:
+        if events:
+            current_time, event_type, customer_id = heapq.heappop(events)
+        else:
+            break
+
+        if event_type == ARRIVAL:
+            if current_time >= close_time:
+                break
+
+            total_customers += 1
+            next_customer_id = total_customers
+
+            if is_peak_period(current_time):
+                inter_arrival_time, IX, IY, IZ = draw_from_distribution(IX, IY, IZ, peak_arrival_intervals, peak_arrival_probabilities)
+                peak_period_customers += 1
+            else:
+                inter_arrival_time, IX, IY, IZ = draw_from_distribution(IX, IY, IZ, normal_arrival_intervals, normal_arrival_probabilities)
+                normal_period_customers += 1
+
+            next_arrival_time = current_time + inter_arrival_time
+            schedule_event(events, next_arrival_time, ARRIVAL, next_customer_id)
+
+            if inter_arrival_time == 0:
+                same_time_arrivals += 1
+
+            if len(queue) < Caisses:
+                shopping_time, IX, IY, IZ = draw_from_distribution(IX, IY, IZ, shopping_times, shopping_probabilities)
+                shopping_done_time = current_time + shopping_time
+                schedule_event(events, shopping_done_time, SHOPPING_DONE, customer_id)
+                customer_arrival_times[customer_id] = current_time
+            else:
+                lost_customers += 1
+
+        elif event_type == SHOPPING_DONE:
+            x, IX, IY, IZ = alea(IX, IY, IZ)
+            if x < prob_no_payment:
+                not_payed_customers += 1
+            else:
+                queue.append((customer_id, current_time))
+                for i in range(Caisses):
+                    if not counter_busy[i]:
+                        counter_busy[i] = True
+                        queue_customer_id, queue_entry_time = queue.pop(0)
+                        payment_time, IX, IY, IZ = draw_from_distribution(IX, IY, IZ, payment_times, payment_probabilities)
+                        counter_utilization_time[i] += payment_time
+                        payment_done_time = current_time + payment_time
+                        total_waiting_time += current_time - queue_entry_time
+                        schedule_event(events, payment_done_time, PAYMENT_DONE[i], queue_customer_id)
+                        customer_service_times[queue_customer_id] = payment_done_time
+                        break
+
+        else:
+            counter_index = int(event_type[-1]) - 1
+            counter_busy[counter_index] = False
+            if queue:
+                counter_busy[counter_index] = True
+                queue_customer_id, queue_entry_time = queue.pop(0)
+                payment_time, IX, IY, IZ = draw_from_distribution(IX, IY, IZ, payment_times, payment_probabilities)
+                counter_utilization_time[counter_index] += payment_time
+                payment_done_time = current_time + payment_time
+                total_waiting_time += current_time - queue_entry_time
+                schedule_event(events, payment_done_time, PAYMENT_DONE[counter_index], queue_customer_id)
+                customer_service_times[queue_customer_id] = payment_done_time
+
+        if len(queue) <= 1:
+            time_with_max_one_customer += (current_time - last_queue_length_update_time)
+
+        total_queue_length += len(queue) * (current_time - last_queue_length_update_time)
+        last_queue_length_update_time = current_time
+
+    total_simulation_time = close_time - open_time
+    average_waiting_time = total_waiting_time / (total_customers - not_payed_customers) if total_customers else 0
+    average_queue_length = total_queue_length / total_simulation_time
+    time_with_max_one_customer_ratio = time_with_max_one_customer / total_simulation_time
+    total_system_time = sum(customer_service_times[customer] - customer_arrival_times[customer] for customer in customer_service_times)
+    average_system_time = total_system_time / (total_customers - not_payed_customers) if total_customers else 0
+    utilization_ratios = [utilization / total_simulation_time for utilization in counter_utilization_time]
+
+    if Caisses == 2:
+        utilization_ratios.append(0)
+
+    return [
+        normal_period_customers, peak_period_customers, total_customers, lost_customers,
+        same_time_arrivals, not_payed_customers, average_waiting_time, average_queue_length,
+        time_with_max_one_customer_ratio, average_system_time, *utilization_ratios[:3]
+    ]
+
+def simulate_days(n_days, IX, IY, IZ, Caisses):
+
+    results = []
+    for _ in range(n_days):
+        if IX > 29800 or IY > 29800 or IZ> 29800 :
+            messagebox.showerror("ERROR","Les germes ne sont pas dans l'intervalle permis.")
+            return 
+        result = Single_simulation(IX, IY, IZ, Caisses)
+        results.append(result)
+        IX += 10
+        IY += 30
+        IZ += 20
+    return results
+
+def run_simulation():
+    IX = int(IX_entry.get())
+    IY = int(IY_entry.get())
+    IZ = int(IZ_entry.get())
+    Caisses = int(caisses_entry.get())
+    n_days = int(days_entry.get())
+
+    
+
+    global df
+    results = simulate_days(n_days, IX, IY, IZ, Caisses)
+    cols = ['PN', 'PP', 'NCE', 'NCP', 'NCAMT', 'NCNPC', 'TATmoy', 'LMQ', 'TMaxQ1', 'TSmoy', 'TauxC1', 'TauxC2', 'TauxC3']
+    df = pd.DataFrame(results, columns=cols)
+
+    result_text.delete(1.0, tk.END)
+    result_text.insert(tk.END, df.to_string())
+
+    create_graph_buttons()
+
+def calculate_confidence_interval(data):
+    mean = np.mean(data)
+    std_err = np.std(data, ddof=1) / np.sqrt(len(data))
+    margin_of_error = 1.96 * std_err
+    return mean, margin_of_error
+
+def plot_graph(graph_type):
+    global canvas
+    if df.empty:
+        return
+
+    fig, ax = plt.subplots()
+
+    if graph_type == 'line':
+        ax.plot(df.index, df['NCE'], label='NCE')
+        ax.plot(df.index, df['NCP'], label='NCP')
+        ax.set_xlabel('Jour de simulation')
+        ax.set_ylabel('Nombre de Clients')
+        ax.legend()
+    elif graph_type == 'line2':
+        ax.plot(df.index, df['NCNPC'], label='Nombre de clients qui ne passe pas par la caisse')
+        ax.plot(df.index, df['NCP'], label='Clients perdu')
+        ax.set_xlabel('Jour de simulation')
+        ax.set_ylabel('Nombre de clients')
+        ax.legend() 
+
+    elif graph_type == 'bar':
+        bar_width = 0.35
+        index = np.arange(len(df))
+        ax.bar(index, df['PN'], bar_width, label='Période Normale')
+        ax.bar(index + bar_width, df['PP'], bar_width, label='Période de pic')
+        ax.set_xlabel('Jour de Simulation')
+        ax.set_ylabel('NCE')
+        ax.legend()
+    elif graph_type == 'hist':
+        ax.hist(df['TATmoy'], bins=10)
+        ax.set_xlabel('TATmoy')
+        ax.set_ylabel('Frequence')
+    elif graph_type == 'pie1':
+        ax.pie([df['NCNPC'].mean(), df['NCE'].mean() - df['NCNPC'].mean()],
+               labels=['n\'ont pas payé', 'Payé'], autopct='%1.1f%%')
+    elif graph_type == 'pie2':
+        ax.pie([df['TauxC1'].mean(), df['TauxC2'].mean(), df['TauxC3'].mean()],
+               labels=['TAUC1', 'TAUC2','TAUC3'], autopct='%1.1f%%')
+    elif graph_type == 'box':
+        ax.boxplot([df['TATmoy'], df['LMQ']], labels=['Temps d\'attente', 'Longeur du Queue'])
+    elif graph_type == 'scatter':
+        ax.scatter(df['NCAMT'], df['NCP'])
+        ax.set_xlabel('NCAMT')
+        ax.set_ylabel('NCP')
+
+    if canvas:
+        canvas.get_tk_widget().destroy()
+    canvas = FigureCanvasTkAgg(fig, master=root)
+    canvas.get_tk_widget().grid(row=6, columnspan=8)
+    canvas.draw()
+
+
+
+
+
+
+    
+
+def plot_comparaison():
+    global plot_canvas, plot_frame
+
+    IX = int(IX_entry.get())
+    IY = int(IY_entry.get())
+    IZ = int(IZ_entry.get())
+    n_days = int(days_entry.get())
+    Caisses = int(caisses_entry.get())
+
+    if IX > 30000 or IY > 30000 or IZ > 30000:
+        messagebox.showerror("Error", "IX, IY, or IZ is greater than 30000")
+        return
+
+    results_2 = simulate_days(n_days, IX, IY, IZ, 2)
+    results_3 = simulate_days(n_days, IX, IY, IZ, 3)
+
+    if not results_2 or not results_3:
+        return
+
+    cols = ['PN', 'PP', 'NCE', 'NCP', 'NCAMT', 'NCNPC', 'TATmoy', 'LMQ', 'TMaxQ1', 'TSmoy', 'TauxC1', 'TauxC2', 'TauxC3']
+    df_2 = pd.DataFrame(results_2, columns=cols)
+    df_3 = pd.DataFrame(results_3, columns=cols)
+
+    # Création d'un cadre pour le graphique
+    if not plot_frame:
+        plot_frame = tk.Frame(root)
+        plot_frame.grid(row=2, column=0, columnspan=12)
+
+    fig, axes = plt.subplots(4, 3, figsize=(10, 6))
+    fig.suptitle('Comparaison entre 2 Caisses et 3 Caisses')
+    indicators = cols
+
+    for i, indicator in enumerate(indicators):
+        if i >= 11:
+            break
+        ax = axes[i // 3, i % 3]
+        ax.plot(df_2[indicator], label='2 Caisses')
+        ax.plot(df_3[indicator], label='3 Caisses')
+        ax.set_title(indicator)
+        ax.legend()
+
+    # Masquer les sous-graphiques inutilisés
+    for j in range(i + 1, 12):
+        fig.delaxes(axes.flatten()[j])
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+
+    if plot_canvas:
+        plot_canvas.get_tk_widget().destroy()
+
+    plot_canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    plot_canvas.get_tk_widget().grid(row=0, column=0, columnspan=10)
+    plot_canvas.draw()
+    
+    
+
+def plot_confidence_intervals():
+    global canvas
+    if df.empty:
+        return
+
+    NCP_mean, NCP_margin = calculate_confidence_interval(df['NCP'])
+    NCNPC_mean, NCNPC_margin = calculate_confidence_interval(df['NCNPC'])
+
+    fig, ax = plt.subplots()
+    indicators = ['NCP', 'NCNPC']
+    means = [NCP_mean, NCNPC_mean]
+    margins = [NCP_margin, NCNPC_margin]
+
+    ax.bar(indicators, means, yerr=margins, capsize=10)
+    ax.set_ylabel('Nombre de clients')
+    ax.set_title('95% Intervalles de confiance pour NCP et NCNPC')
+
+    if canvas:
+        canvas.get_tk_widget().destroy()
+    canvas = FigureCanvasTkAgg(fig, master=root)
+    canvas.get_tk_widget().grid(row=6, columnspan=8)
+    canvas.draw()
+
+def remove_graph():
+    global canvas
+    if canvas:
+        canvas.get_tk_widget().destroy()
+        canvas = None
+
+canvas = None
+plot_canvas = None
+plot_frame = None
+
+def create_graph_buttons():
+    line_button = tk.Button(root, text="Line Graph",bg="green", command=lambda: plot_graph('line'))
+    line_button.grid(row=5, column=2)
+
+    bar_button = tk.Button(root, text="Bar Chart", bg="green",command=lambda: plot_graph('bar'))
+    bar_button.grid(row=5, column=3)
+
+    hist_button = tk.Button(root, text="Histogram", bg="green",command=lambda: plot_graph('hist'))
+    hist_button.grid(row=5, column=4)
+
+    pie_button = tk.Button(root, text="Pie Chart NCNPC",bg="green", command=lambda: plot_graph('pie1'))
+    pie_button.grid(row=5, column=5)
+
+    pie_button = tk.Button(root, text="Pie Chart TAUX", bg="green",command=lambda: plot_graph('pie2'))
+    pie_button.grid(row=5, column=6)
+
+    box_button = tk.Button(root, text="Box Plot", bg="green",command=lambda: plot_graph('box'))
+    box_button.grid(row=5, column=7)
+
+    scatter_button = tk.Button(root, text="Scatter Plot",bg="green", command=lambda: plot_graph('scatter'))
+    scatter_button.grid(row=5, column=8)
+
+    ci_button = tk.Button(root, text="Confidence Intervals",bg="green", command=plot_confidence_intervals)
+    ci_button.grid(row=5, column=9)
+
+    
+    line_button = tk.Button(root, text="Line Graph",bg="green", command=lambda: plot_graph('line2'))
+    line_button.grid(row=5, column=11)
+    ci_button = tk.Button(root, text="Comparaisons",bg="green", command=plot_comparaison)
+    ci_button.grid(row=5, column=10)
+
+    remove_button = tk.Button(root, text="Remove Graph", bg="red",command=remove_graph)
+    remove_button.grid(row=1, column=20)
+
+    
+    
+
+root = tk.Tk()
+root.title("Interface de Simulation")
+root.configure(bg="#ADD8E6")
+
+canvas = None
+
+tk.Label(root, text="IX:").grid(row=0, column=0)
+IX_entry = tk.Entry(root)
+IX_entry.grid(row=0, column=1)
+
+tk.Label(root, text="IY:").grid(row=1, column=0)
+IY_entry = tk.Entry(root)
+IY_entry.grid(row=1, column=1)
+
+tk.Label(root, text="IZ:").grid(row=2, column=0)
+IZ_entry = tk.Entry(root)
+IZ_entry.grid(row=2, column=1)
+
+tk.Label(root, text="Nombre de Caisses:").grid(row=3, column=0)
+caisses_entry = tk.Entry(root)
+caisses_entry.grid(row=3, column=1)
+
+tk.Label(root, text="Nombre de Simulations:").grid(row=4, column=0)
+days_entry = tk.Entry(root)
+days_entry.grid(row=4, column=1)
+
+run_button = tk.Button(root, text="Run Simulation",  bg="green",command=run_simulation)
+run_button.grid(row=5, column=0, columnspan=2)
+
+result_text = tk.Text(root, wrap="none", width=100, height=10)
+result_text.grid(row=6, columnspan=8)
+
+scroll_x = ttk.Scrollbar(root, orient="horizontal", command=result_text.xview)
+scroll_x.grid(row=7, columnspan=8, sticky="ew")
+result_text.config(xscrollcommand=scroll_x.set)
+
+scroll_y = ttk.Scrollbar(root, orient="vertical", command=result_text.yview)
+scroll_y.grid(row=6, column=8, sticky="ns")
+result_text.config(yscrollcommand=scroll_y.set)
+
+
+
+root.mainloop()
